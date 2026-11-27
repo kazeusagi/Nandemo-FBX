@@ -2,6 +2,7 @@ use nandemo_core::math::{add, normalize, quat_mul};
 use nandemo_core::{Model, Motion};
 
 use crate::binary::leaf;
+use crate::mesh::Channel;
 use crate::skeleton::Skeleton;
 use crate::{CM_PER_METER, Document, matrix, object, p_number, p_time, props};
 
@@ -11,17 +12,23 @@ const KTIME_PER_SECOND: f64 = 46_186_158_000.0;
 /// 線形補間（eInterpolationLinear | eTangentAuto）
 const KEY_FLAGS_LINEAR: i32 = 0x0104;
 
-/// ボーンアニメーションを書き出します。
+/// ボーンとモーフのアニメーションを書き出します。
 ///
-/// ベジェ補間をそのまま FBX に移すのは難しいので、毎フレームの値を焼き込みます。
+/// ボーンはベジェ補間をそのまま FBX に移すのが難しいので、毎フレームの値を焼き込みます。
 /// 回転はオイラー角にするため、前のフレームに近い角度を選んで飛びを防ぎます。
-// TODO: IK・付与親の焼き込み、モーフアニメーション、キーの間引き
-pub(crate) fn write(doc: &mut Document, model: &Model, motion: &Motion, skeleton: &Skeleton) {
+/// モーフは VMD でも線形補間なので、キーをそのまま書き出します。
+// TODO: キーの間引き
+pub(crate) fn write(
+    doc: &mut Document,
+    model: &Model,
+    motion: &Motion,
+    skeleton: &Skeleton,
+    channels: &[Channel],
+) {
     let fps = if motion.fps > 0.0 { motion.fps } else { 30.0 } as f64;
+    let time = |frame: u32| (frame as f64 * KTIME_PER_SECOND / fps).round() as i64;
     let last = motion.last_frame();
-    let times: Vec<i64> = (0..=last)
-        .map(|f| (f as f64 * KTIME_PER_SECOND / fps).round() as i64)
-        .collect();
+    let times: Vec<i64> = (0..=last).map(time).collect();
 
     let (stack, layer) = (doc.id(), doc.id());
     let name = if motion.name.is_empty() {
@@ -32,9 +39,9 @@ pub(crate) fn write(doc: &mut Document, model: &Model, motion: &Motion, skeleton
     doc.add(
         object("AnimationStack", "AnimStack", stack, name, "").child(props([
             p_time("LocalStart", 0),
-            p_time("LocalStop", times[times.len() - 1]),
+            p_time("LocalStop", time(last)),
             p_time("ReferenceStart", 0),
-            p_time("ReferenceStop", times[times.len() - 1]),
+            p_time("ReferenceStop", time(last)),
         ])),
     );
     doc.add(object(
@@ -66,6 +73,9 @@ pub(crate) fn write(doc: &mut Document, model: &Model, motion: &Motion, skeleton
         }
 
         let target = skeleton.ids[i];
+        let [tx, ty, tz] = translation;
+        let [rx, ry, rz] = rotation;
+        let curves = |x, y, z| vec![("d|X", x), ("d|Y", y), ("d|Z", z)];
         curve_node(
             doc,
             layer,
@@ -73,13 +83,42 @@ pub(crate) fn write(doc: &mut Document, model: &Model, motion: &Motion, skeleton
             "T",
             "Lcl Translation",
             &times,
-            translation,
+            curves(tx, ty, tz),
         );
-        curve_node(doc, layer, target, "R", "Lcl Rotation", &times, rotation);
+        curve_node(
+            doc,
+            layer,
+            target,
+            "R",
+            "Lcl Rotation",
+            &times,
+            curves(rx, ry, rz),
+        );
+    }
+
+    for channel in channels {
+        let Some(track) = motion.morphs.iter().find(|t| t.morph == channel.morph) else {
+            continue;
+        };
+        if track.keys.is_empty() {
+            continue;
+        }
+        // FBX のブレンドシェイプの重みは 0〜100
+        let times: Vec<i64> = track.keys.iter().map(|k| time(k.frame)).collect();
+        let values = track.keys.iter().map(|k| k.weight * 100.0).collect();
+        curve_node(
+            doc,
+            layer,
+            channel.id,
+            "DeformPercent",
+            "DeformPercent",
+            &times,
+            vec![("d|DeformPercent", values)],
+        );
     }
 }
 
-/// 3 成分のカーブノードと、成分ごとのカーブを書き出します。
+/// カーブノードと、成分ごとのカーブを書き出します。
 fn curve_node(
     doc: &mut Document,
     layer: i64,
@@ -87,20 +126,20 @@ fn curve_node(
     name: &str,
     prop: &str,
     times: &[i64],
-    values: [Vec<f32>; 3],
+    curves: Vec<(&str, Vec<f32>)>,
 ) {
-    const AXES: [&str; 3] = ["d|X", "d|Y", "d|Z"];
-
     let node = doc.id();
     doc.add(
         object("AnimationCurveNode", "AnimCurveNode", node, name, "").child(props(
-            (0..3).map(|c| p_number(AXES[c], values[c][0] as f64)),
+            curves
+                .iter()
+                .map(|(axis, values)| p_number(axis, values[0] as f64)),
         )),
     );
     doc.connect(node, layer);
     doc.connect_prop(node, target, prop);
 
-    for (axis, values) in AXES.iter().zip(values) {
+    for (axis, values) in curves {
         // 値が変化しないカーブはキー 1 つにします
         let (times, values) = if values.iter().all(|&v| v == values[0]) {
             (vec![times[0]], vec![values[0]])

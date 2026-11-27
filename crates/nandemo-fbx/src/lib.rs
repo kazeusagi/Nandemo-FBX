@@ -1,7 +1,8 @@
 //! IR から FBX（バイナリ 7.4）を書き出します。
 //!
 //! 出力の座標系は Y-up・正面 +Z・右手系、単位はセンチメートル（UnitScaleFactor = 1）です。
-//! ボーン・スキン・メッシュ（位置・法線・UV）・マテリアルの色・ボーンアニメーションを書き出します。
+//! ボーン・スキン・メッシュ（位置・法線・UV）・マテリアルの色・ブレンドシェイプと、
+//! ボーン・ブレンドシェイプのアニメーションを書き出します。
 
 mod anim;
 pub mod binary;
@@ -17,8 +18,8 @@ const CM_PER_METER: f64 = 100.0;
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// メッシュ・マテリアル・スキンを書き出すか。
-    /// `false` にするとボーンとアニメーションだけの FBX になります
+    /// メッシュ・マテリアル・スキン・ブレンドシェイプを書き出すか。
+    /// `false` にするとボーンとボーンアニメーションだけの FBX になります
     pub mesh: bool,
 }
 
@@ -32,11 +33,13 @@ impl Default for Options {
 pub fn write(model: &Model, motion: Option<&Motion>, options: &Options) -> Vec<u8> {
     let mut doc = Document::default();
     let skeleton = skeleton::write(&mut doc, &model.bones);
-    if options.mesh {
-        mesh::write(&mut doc, model, &skeleton);
-    }
+    let channels = if options.mesh {
+        mesh::write(&mut doc, model, &skeleton)
+    } else {
+        Vec::new()
+    };
     if let Some(motion) = motion {
-        anim::write(&mut doc, model, motion, &skeleton);
+        anim::write(&mut doc, model, motion, &skeleton, &channels);
     }
     doc.encode()
 }

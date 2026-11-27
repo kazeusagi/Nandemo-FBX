@@ -69,8 +69,8 @@ fn sample_pmx() -> Vec<u8> {
     b.f32s(&[-1.0, 0.0, 0.0]);
     b.f32s(&[1.0, 0.0, 0.0]);
 
-    // モーフ 2 つ（頂点モーフ、UV モーフ）
-    b.i32(2);
+    // モーフ 3 つ（頂点モーフ、UV モーフ、グループモーフ）
+    b.i32(3);
     b.text("あ");
     b.text("a");
     b.raw(&[3, 1]);
@@ -84,6 +84,18 @@ fn sample_pmx() -> Vec<u8> {
     b.i32(1);
     b.raw(&[0]);
     b.f32s(&[0.0; 4]);
+
+    // 「あ」を 50%、UV モーフ（無視される）と自分自身（循環）も含む
+    b.text("あ半分");
+    b.text("a_half");
+    b.raw(&[3, 0]);
+    b.i32(3);
+    b.raw(&[0]);
+    b.f32(0.5);
+    b.raw(&[1]);
+    b.f32(1.0);
+    b.raw(&[2]);
+    b.f32(1.0);
 
     b.0
 }
@@ -135,6 +147,7 @@ fn parses_sample() {
 
     assert!(matches!(&pmx.morphs[0].kind, MorphKind::Vertex(o) if o[0].vertex == 2));
     assert!(matches!(pmx.morphs[1].kind, MorphKind::Unsupported(3)));
+    assert!(matches!(&pmx.morphs[2].kind, MorphKind::Group(g) if g.len() == 3));
 }
 
 #[test]
@@ -163,8 +176,17 @@ fn converts_to_right_handed_meters() {
             count: 3
         }]
     );
-    assert_eq!(mesh.morphs.len(), 1);
+    // UV モーフは除かれ、グループモーフは頂点モーフに展開される
+    assert_eq!(mesh.morphs.len(), 2);
     assert_eq!(mesh.morphs[0].offsets[0].position, [0.0, 0.0, -s]);
+    assert_eq!(mesh.morphs[1].name, "あ半分");
+    assert_eq!(
+        mesh.morphs[1].offsets,
+        [nandemo_core::MorphOffset {
+            vertex: 2,
+            position: [0.0, 0.0, -0.5 * s]
+        }]
+    );
 
     assert_eq!(model.materials[0].base_color_texture, Some(0));
     assert_eq!(model.textures[0].path, "tex/body.png");

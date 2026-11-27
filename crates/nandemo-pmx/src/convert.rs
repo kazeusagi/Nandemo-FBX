@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+
 use nandemo_core as ir;
+use nandemo_core::math::{add, scale};
 
 use crate::{Bone, MorphKind, Pmx, Weight};
 
@@ -39,21 +42,20 @@ pub fn to_model(pmx: &Pmx) -> ir::Model {
         start += count;
     }
 
-    let morphs = pmx
-        .morphs
-        .iter()
-        .filter_map(|m| match &m.kind {
-            MorphKind::Vertex(offsets) => Some(ir::Morph {
-                name: m.name.clone(),
+    // 頂点モーフと、頂点モーフを含むグループモーフ
+    let morphs = (0..pmx.morphs.len())
+        .filter_map(|i| {
+            let offsets = vertex_offsets(pmx, i, &mut Vec::new());
+            (!offsets.is_empty()).then(|| ir::Morph {
+                name: pmx.morphs[i].name.clone(),
                 offsets: offsets
-                    .iter()
-                    .map(|o| ir::MorphOffset {
-                        vertex: o.vertex,
-                        position: position(o.offset),
+                    .into_iter()
+                    .map(|(vertex, offset)| ir::MorphOffset {
+                        vertex,
+                        position: position(offset),
                     })
                     .collect(),
-            }),
-            _ => None,
+            })
         })
         .collect();
 
@@ -144,6 +146,46 @@ pub fn to_model(pmx: &Pmx) -> ir::Model {
         textures,
         bones,
     }
+}
+
+/// モーフ `i` の頂点ごとの移動量（MMD の座標のまま）。
+/// グループモーフは、含まれるモーフの移動量を割合を掛けて足し合わせます。
+/// ボーン・UV・材質モーフは FBX のブレンドシェイプにできないので無視します。
+/// `visiting` は計算中のモーフで、循環しているグループモーフを無視するのに使います。
+fn vertex_offsets(pmx: &Pmx, i: usize, visiting: &mut Vec<usize>) -> BTreeMap<u32, ir::Vec3> {
+    let mut out = BTreeMap::new();
+    if visiting.contains(&i) {
+        return out;
+    }
+    visiting.push(i);
+    match &pmx.morphs[i].kind {
+        MorphKind::Vertex(offsets) => {
+            for o in offsets
+                .iter()
+                .filter(|o| (o.vertex as usize) < pmx.vertices.len())
+            {
+                let v = out.entry(o.vertex).or_insert([0.0; 3]);
+                *v = add(*v, o.offset);
+            }
+        }
+        MorphKind::Group(children) => {
+            for &(child, weight) in children {
+                let Some(child) = usize::try_from(child)
+                    .ok()
+                    .filter(|&c| c < pmx.morphs.len())
+                else {
+                    continue;
+                };
+                for (vertex, offset) in vertex_offsets(pmx, child, visiting) {
+                    let v = out.entry(vertex).or_insert([0.0; 3]);
+                    *v = add(*v, scale(offset, weight));
+                }
+            }
+        }
+        _ => {}
+    }
+    visiting.pop();
+    out
 }
 
 fn position(v: ir::Vec3) -> ir::Vec3 {

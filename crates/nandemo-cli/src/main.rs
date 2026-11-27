@@ -29,7 +29,7 @@ enum Export {
     All,
     /// メッシュ・マテリアル・ボーン（モーションは書き出さない）
     Model,
-    /// ボーンとアニメーションだけ（--motion が必要）
+    /// ボーンとボーンアニメーションだけ（--motion が必要。モーフのアニメーションはメッシュがないので含まれません）
     Anim,
 }
 
@@ -60,7 +60,7 @@ fn run(args: Args) -> Result<()> {
         None => None,
     };
     if let Some(motion) = &motion {
-        report_unmatched(&model, motion);
+        report_unmatched(&model, motion, args.export);
     }
     // FBX には IK・付与親がないので、計算したポーズを焼き込みます
     let motion = motion.map(|m| {
@@ -86,7 +86,7 @@ fn run(args: Args) -> Result<()> {
 }
 
 /// モデルにないボーンのトラックなど、書き出されないものを知らせます
-fn report_unmatched(model: &Model, motion: &Motion) {
+fn report_unmatched(model: &Model, motion: &Motion, export: Export) {
     let missing: Vec<&str> = motion
         .bones
         .iter()
@@ -100,9 +100,31 @@ fn report_unmatched(model: &Model, motion: &Motion) {
             missing.join(", ")
         );
     }
-    if !motion.morphs.is_empty() {
-        // TODO: モーフアニメーションの書き出し
-        eprintln!("警告: モーフのアニメーションはまだ書き出せません");
+
+    let has_morph = |name: &str| {
+        model
+            .meshes
+            .iter()
+            .flat_map(|m| &m.morphs)
+            .any(|m| m.name == name && !m.offsets.is_empty())
+    };
+    let missing: Vec<&str> = motion
+        .morphs
+        .iter()
+        .map(|t| t.morph.as_str())
+        .filter(|name| !has_morph(name))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "警告: モデルにない（またはボーン・UV・材質だけの）モーフ {} 個のモーションは無視しました: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+    }
+    if export == Export::Anim && !motion.morphs.is_empty() {
+        eprintln!(
+            "警告: --export anim ではメッシュがないので、モーフのアニメーションは書き出しません"
+        );
     }
 }
 

@@ -5,8 +5,14 @@ use crate::matrix::{self, Mat4};
 use crate::skeleton::Skeleton;
 use crate::{CM_PER_METER, Document, object, p_color, p_double, props};
 
-/// メッシュ・マテリアル・スキン・バインドポーズを書き出します。
-pub(crate) fn write(doc: &mut Document, model: &Model, skeleton: &Skeleton) {
+/// ブレンドシェイプのチャンネル（アニメーションの接続先）
+pub(crate) struct Channel {
+    pub morph: String,
+    pub id: i64,
+}
+
+/// メッシュ・マテリアル・スキン・ブレンドシェイプ・バインドポーズを書き出します。
+pub(crate) fn write(doc: &mut Document, model: &Model, skeleton: &Skeleton) -> Vec<Channel> {
     let material_ids: Vec<i64> = model
         .materials
         .iter()
@@ -19,6 +25,7 @@ pub(crate) fn write(doc: &mut Document, model: &Model, skeleton: &Skeleton) {
 
     // バインドポーズに入れる（Model の ID, 行列）
     let mut pose: Vec<(i64, Mat4)> = Vec::new();
+    let mut channels = Vec::new();
 
     for mesh in &model.meshes {
         let (model_id, geometry_id) = (doc.id(), doc.id());
@@ -39,6 +46,7 @@ pub(crate) fn write(doc: &mut Document, model: &Model, skeleton: &Skeleton) {
             doc.connect(material_ids[m], model_id);
         }
 
+        write_blend_shapes(doc, mesh, geometry_id, &mut channels);
         if write_skin(doc, mesh, geometry_id, skeleton, &model.bones) {
             pose.push((model_id, matrix::IDENTITY));
         }
@@ -64,6 +72,75 @@ pub(crate) fn write(doc: &mut Document, model: &Model, skeleton: &Skeleton) {
                         .child(leaf("Matrix", m.to_vec()))
                 })),
         );
+    }
+    channels
+}
+
+/// モーフをブレンドシェイプ（Shape・BlendShape・BlendShapeChannel）として書き出します。
+fn write_blend_shapes(
+    doc: &mut Document,
+    mesh: &Mesh,
+    geometry_id: i64,
+    channels: &mut Vec<Channel>,
+) {
+    let mut deformer = None;
+    for morph in &mesh.morphs {
+        // 同じ頂点が重複していればまとめます
+        let mut offsets = std::collections::BTreeMap::new();
+        for o in morph
+            .offsets
+            .iter()
+            .filter(|o| (o.vertex as usize) < mesh.positions.len())
+        {
+            let v = offsets.entry(o.vertex as i32).or_insert([0.0f64; 3]);
+            for (sum, &p) in v.iter_mut().zip(&o.position) {
+                *sum += p as f64 * CM_PER_METER;
+            }
+        }
+        if offsets.is_empty() {
+            continue;
+        }
+
+        let deformer = *deformer.get_or_insert_with(|| {
+            let id = doc.id();
+            doc.add(
+                object("Deformer", "Deformer", id, &mesh.name, "BlendShape")
+                    .child(leaf("Version", 100)),
+            );
+            doc.connect(id, geometry_id);
+            id
+        });
+
+        let (channel, shape) = (doc.id(), doc.id());
+        let indexes: Vec<i32> = offsets.keys().copied().collect();
+        let vertices: Vec<f64> = offsets.values().flatten().copied().collect();
+        // Shape の Vertices・Normals は元の形からの差分です
+        let normals = vec![0.0f64; vertices.len()];
+        doc.add(
+            object("Geometry", "Geometry", shape, &morph.name, "Shape")
+                .child(leaf("Version", 100))
+                .child(leaf("Indexes", indexes))
+                .child(leaf("Vertices", vertices))
+                .child(leaf("Normals", normals)),
+        );
+        doc.add(
+            object(
+                "Deformer",
+                "SubDeformer",
+                channel,
+                &morph.name,
+                "BlendShapeChannel",
+            )
+            .child(leaf("Version", 100))
+            .child(leaf("DeformPercent", 0.0))
+            .child(leaf("FullWeights", vec![100.0f64])),
+        );
+        doc.connect(channel, deformer);
+        doc.connect(shape, channel);
+        channels.push(Channel {
+            morph: morph.name.clone(),
+            id: channel,
+        });
     }
 }
 
