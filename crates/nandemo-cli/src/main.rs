@@ -21,6 +21,15 @@ struct Args {
     /// 書き出す内容
     #[arg(short, long, value_enum, default_value_t = Export::All)]
     export: Export,
+    /// ボーンアニメーションのキーを減らすときの、移動の許容誤差（mm）
+    #[arg(long, default_value_t = 0.1)]
+    tolerance_mm: f32,
+    /// ボーンアニメーションのキーを減らすときの、回転の許容誤差（度）
+    #[arg(long, default_value_t = 0.01)]
+    tolerance_deg: f32,
+    /// キーを減らさず、全フレームのキーを書き出す
+    #[arg(long)]
+    no_reduce: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
@@ -71,8 +80,11 @@ fn run(args: Args) -> Result<()> {
         }
     });
 
+    let reduce = if args.no_reduce { 0.0 } else { 1.0 };
     let options = nandemo_fbx::Options {
         mesh: args.export != Export::Anim,
+        translation_tolerance: args.tolerance_mm / 1000.0 * reduce,
+        rotation_tolerance: args.tolerance_deg * reduce,
     };
     let output = args
         .output
