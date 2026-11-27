@@ -65,6 +65,16 @@ impl From<Vec<i32>> for Prop {
         Prop::I32s(v)
     }
 }
+impl From<Vec<i64>> for Prop {
+    fn from(v: Vec<i64>) -> Self {
+        Prop::I64s(v)
+    }
+}
+impl From<Vec<f32>> for Prop {
+    fn from(v: Vec<f32>) -> Self {
+        Prop::F32s(v)
+    }
+}
 impl From<Vec<f64>> for Prop {
     fn from(v: Vec<f64>) -> Self {
         Prop::F64s(v)
@@ -179,16 +189,23 @@ fn bytes(out: &mut Vec<u8>, code: u8, data: &[u8]) {
     out.extend(data);
 }
 
-// TODO: 大きな配列は zlib 圧縮する（encoding = 1）
+/// この大きさ（バイト）以上の配列は zlib で圧縮します（Blender と同じ基準）
+const COMPRESS_THRESHOLD: usize = 128;
+
 fn array(out: &mut Vec<u8>, code: u8, len: usize, data: impl Iterator<Item = u8>) {
+    let mut data: Vec<u8> = data.collect();
+    let compressed = data.len() >= COMPRESS_THRESHOLD;
+    if compressed {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&data).unwrap();
+        data = z.finish().unwrap();
+    }
     out.push(code);
     out.extend((len as u32).to_le_bytes());
-    out.extend(0u32.to_le_bytes()); // encoding: 非圧縮
-    let len_pos = out.len();
-    out.extend(0u32.to_le_bytes());
+    out.extend((compressed as u32).to_le_bytes()); // encoding: 0 = 非圧縮, 1 = zlib
+    out.extend((data.len() as u32).to_le_bytes());
     out.extend(data);
-    let data_len = (out.len() - len_pos - 4) as u32;
-    out[len_pos..len_pos + 4].copy_from_slice(&data_len.to_le_bytes());
 }
 
 fn write_footer(out: &mut Vec<u8>) {
@@ -226,6 +243,24 @@ mod tests {
         // トップレベルの終わりの空レコードの後にフッター
         assert_eq!(&data[end + 13..end + 29], &FOOTER_ID);
         assert!(data.ends_with(&FOOTER_MAGIC));
+    }
+
+    #[test]
+    fn compresses_large_arrays() {
+        use std::io::Read;
+        let values: Vec<i32> = (0..100).collect();
+        let mut out = Vec::new();
+        write_prop(&mut out, &Prop::I32s(values.clone()));
+        assert_eq!(&out[1..9], &[100, 0, 0, 0, 1, 0, 0, 0]);
+        let len = u32::from_le_bytes(out[9..13].try_into().unwrap()) as usize;
+        assert_eq!(out.len(), 13 + len);
+
+        let mut raw = Vec::new();
+        flate2::read::ZlibDecoder::new(&out[13..])
+            .read_to_end(&mut raw)
+            .unwrap();
+        let want: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(raw, want);
     }
 
     #[test]

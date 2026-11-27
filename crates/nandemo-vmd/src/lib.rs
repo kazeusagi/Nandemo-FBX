@@ -107,6 +107,7 @@ pub fn to_motion(vmd: &Vmd) -> ir::Motion {
             frame: k.frame,
             translation: [x * s, y * s, -z * s],
             rotation: [-qx, -qy, qz, qw],
+            interpolation: std::array::from_fn(|c| bezier(&k.interpolation, c)),
         });
     }
 
@@ -138,6 +139,18 @@ pub fn to_motion(vmd: &Vmd) -> ir::Motion {
         fps: FPS,
         bones,
         morphs,
+    }
+}
+
+/// 補間パラメーターからベジェ曲線を取り出します。
+/// `c` は 0〜2 が移動 X・Y・Z、3 が回転で、x1・y1・x2・y2 が 4 バイトおきに並んでいます（各 0〜127）。
+fn bezier(data: &[u8; 64], c: usize) -> ir::Bezier {
+    let v = |i: usize| data[c + i * 4].min(127) as f32 / 127.0;
+    ir::Bezier {
+        x1: v(0),
+        y1: v(1),
+        x2: v(2),
+        y2: v(3),
     }
 }
 
@@ -216,6 +229,7 @@ mod tests {
         let s = MMD_UNIT_METERS;
         assert_eq!(keys[0].translation, [s, 2.0 * s, -3.0 * s]);
         assert_eq!(keys[0].rotation, [-0.1, -0.2, 0.3, 0.9]);
+        assert_eq!(keys[0].interpolation[3].x1, 20.0 / 127.0);
         assert_eq!(motion.morphs[0].keys[0].frame, 5);
     }
 }

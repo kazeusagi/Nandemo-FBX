@@ -3,14 +3,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use nandemo_core::{Model, Motion};
 
 /// MMD / VRM のモデル・モーションを FBX に変換します
 #[derive(Parser)]
 #[command(version)]
 struct Args {
-    /// 入力モデル（.pmx）
+    /// 入力モデル（.pmx）。アニメーションだけを書き出すときもボーン構造に使います
     input: PathBuf,
     /// 入力モーション（.vmd）
     #[arg(short, long)]
@@ -18,6 +18,19 @@ struct Args {
     /// 出力先（省略時は入力と同じ場所に .fbx）
     #[arg(short, long)]
     output: Option<PathBuf>,
+    /// 書き出す内容
+    #[arg(short, long, value_enum, default_value_t = Export::All)]
+    export: Export,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Export {
+    /// メッシュ・マテリアル・ボーン・アニメーション（モーション指定時）
+    All,
+    /// メッシュ・マテリアル・ボーン（モーションは書き出さない）
+    Model,
+    /// ボーンとアニメーションだけ（--motion が必要）
+    Anim,
 }
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -33,24 +46,56 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<()> {
-    let model = load_model(&args.input)?;
-
-    if let Some(path) = &args.motion {
-        let motion = load_motion(path)?;
-        // TODO: アニメーションの書き出し
-        eprintln!(
-            "警告: モーションの書き出しはまだ未対応です（ボーン {} 本・モーフ {} 個分を読み込みました）",
-            motion.bones.len(),
-            motion.morphs.len()
-        );
+    if args.export == Export::Anim && args.motion.is_none() {
+        return Err("--export anim には --motion でモーションを指定してください".into());
     }
 
+    let model = load_model(&args.input)?;
+    let motion = match &args.motion {
+        Some(_) if args.export == Export::Model => {
+            eprintln!("警告: --export model なのでモーションは書き出しません");
+            None
+        }
+        Some(path) => Some(load_motion(path)?),
+        None => None,
+    };
+    if let Some(motion) = &motion {
+        report_unmatched(&model, motion);
+    }
+
+    let options = nandemo_fbx::Options {
+        mesh: args.export != Export::Anim,
+    };
     let output = args
         .output
         .unwrap_or_else(|| args.input.with_extension("fbx"));
-    fs::write(&output, nandemo_fbx::write_model(&model))?;
+    fs::write(
+        &output,
+        nandemo_fbx::write(&model, motion.as_ref(), &options),
+    )?;
     println!("{} を書き出しました", output.display());
     Ok(())
+}
+
+/// モデルにないボーンのトラックなど、書き出されないものを知らせます
+fn report_unmatched(model: &Model, motion: &Motion) {
+    let missing: Vec<&str> = motion
+        .bones
+        .iter()
+        .map(|t| t.bone.as_str())
+        .filter(|name| !model.bones.iter().any(|b| b.name == *name))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "警告: モデルにないボーン {} 本のモーションは無視しました: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+    }
+    if !motion.morphs.is_empty() {
+        // TODO: モーフアニメーションの書き出し
+        eprintln!("警告: モーフのアニメーションはまだ書き出せません");
+    }
 }
 
 fn load_model(path: &Path) -> Result<Model> {

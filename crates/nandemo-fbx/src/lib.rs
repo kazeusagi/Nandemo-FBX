@@ -1,73 +1,112 @@
 //! IR から FBX（バイナリ 7.4）を書き出します。
 //!
 //! 出力の座標系は Y-up・正面 +Z・右手系、単位はセンチメートル（UnitScaleFactor = 1）です。
-//! 今のところメッシュ（位置・法線・UV）とマテリアルの色だけを書き出します。
+//! ボーン・スキン・メッシュ（位置・法線・UV）・マテリアルの色・ボーンアニメーションを書き出します。
 
+mod anim;
 pub mod binary;
+mod matrix;
+mod mesh;
+mod skeleton;
 
 use binary::{CREATION_TIME, FILE_ID, Node, Prop, VERSION, leaf};
-use nandemo_core::{Mesh, Model};
+use nandemo_core::{Model, Motion};
 
 const CREATOR: &str = concat!("Nandemo-FBX ", env!("CARGO_PKG_VERSION"));
 const CM_PER_METER: f64 = 100.0;
 
-/// モデルを FBX バイナリにします。
-pub fn write_model(model: &Model) -> Vec<u8> {
-    let mut ids = 1_000_000i64..;
-    let mut objects = Vec::new();
-    let mut connections = Vec::new();
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// メッシュ・マテリアル・スキンを書き出すか。
+    /// `false` にするとボーンとアニメーションだけの FBX になります
+    pub mesh: bool,
+}
 
-    let material_ids: Vec<i64> = model
-        .materials
-        .iter()
-        .map(|m| {
-            let id = ids.next().unwrap();
-            objects.push(material(id, &m.name, m.base_color));
-            id
-        })
-        .collect();
+impl Default for Options {
+    fn default() -> Self {
+        Self { mesh: true }
+    }
+}
 
-    for mesh in &model.meshes {
-        let (model_id, geometry_id) = (ids.next().unwrap(), ids.next().unwrap());
+/// モデル（とモーション）を FBX バイナリにします。
+pub fn write(model: &Model, motion: Option<&Motion>, options: &Options) -> Vec<u8> {
+    let mut doc = Document::default();
+    let skeleton = skeleton::write(&mut doc, &model.bones);
+    if options.mesh {
+        mesh::write(&mut doc, model, &skeleton);
+    }
+    if let Some(motion) = motion {
+        anim::write(&mut doc, model, motion, &skeleton);
+    }
+    doc.encode()
+}
 
-        // このメッシュで使うマテリアル（接続順がマテリアル番号になります）
-        let mut used: Vec<usize> = Vec::new();
-        for p in &mesh.parts {
-            if p.material < material_ids.len() && !used.contains(&p.material) {
-                used.push(p.material);
-            }
-        }
+/// 書き出し中のオブジェクトと接続
+#[derive(Default)]
+struct Document {
+    last_id: i64,
+    objects: Vec<Node>,
+    connections: Vec<Node>,
+}
 
-        objects.push(mesh_model(model_id, &mesh.name));
-        objects.push(geometry(geometry_id, mesh, &used));
-        connections.push(connect(model_id, 0));
-        connections.push(connect(geometry_id, model_id));
-        for &m in &used {
-            connections.push(connect(material_ids[m], model_id));
-        }
+impl Document {
+    fn id(&mut self) -> i64 {
+        self.last_id += 1;
+        1_000_000 + self.last_id
     }
 
-    let count = |name: &str| objects.iter().filter(|n| n.name == name).count() as i32;
-    let definitions = Node::new("Definitions")
-        .child(leaf("Version", 100))
-        .child(leaf("Count", 1 + objects.len() as i32))
-        .child(object_type("GlobalSettings", 1))
-        .child(object_type("Model", count("Model")))
-        .child(object_type("Geometry", count("Geometry")))
-        .child(object_type("Material", count("Material")));
+    fn add(&mut self, node: Node) {
+        self.objects.push(node);
+    }
 
-    binary::encode(&[
-        header_extension(),
-        leaf("FileId", Prop::Raw(FILE_ID.to_vec())),
-        leaf("CreationTime", CREATION_TIME),
-        leaf("Creator", CREATOR),
-        global_settings(),
-        Node::new("Documents").child(leaf("Count", 0)),
-        Node::new("References"),
-        definitions,
-        Node::new("Objects").children(objects),
-        Node::new("Connections").children(connections),
-    ])
+    /// オブジェクト同士の接続（`parent` が 0 ならシーンのルート）
+    fn connect(&mut self, child: i64, parent: i64) {
+        self.connections
+            .push(Node::new("C").prop("OO").prop(child).prop(parent));
+    }
+
+    /// オブジェクトからプロパティへの接続（アニメーションカーブなど）
+    fn connect_prop(&mut self, child: i64, parent: i64, prop: &str) {
+        self.connections.push(
+            Node::new("C")
+                .prop("OP")
+                .prop(child)
+                .prop(parent)
+                .prop(prop),
+        );
+    }
+
+    fn encode(self) -> Vec<u8> {
+        // 種類ごとの数（出てきた順）
+        let mut types: Vec<(&str, i32)> = vec![("GlobalSettings", 1)];
+        for o in &self.objects {
+            match types.iter_mut().find(|(name, _)| *name == o.name) {
+                Some((_, n)) => *n += 1,
+                None => types.push((&o.name, 1)),
+            }
+        }
+        let definitions = Node::new("Definitions")
+            .child(leaf("Version", 100))
+            .child(leaf("Count", 1 + self.objects.len() as i32))
+            .children(types.iter().map(|&(name, count)| {
+                Node::new("ObjectType")
+                    .prop(name)
+                    .child(leaf("Count", count))
+            }));
+
+        binary::encode(&[
+            header_extension(),
+            leaf("FileId", Prop::Raw(FILE_ID.to_vec())),
+            leaf("CreationTime", CREATION_TIME),
+            leaf("Creator", CREATOR),
+            global_settings(),
+            Node::new("Documents").child(leaf("Count", 0)),
+            Node::new("References"),
+            definitions,
+            Node::new("Objects").children(self.objects),
+            Node::new("Connections").children(self.connections),
+        ])
+    }
 }
 
 fn header_extension() -> Node {
@@ -110,139 +149,16 @@ fn global_settings() -> Node {
         .child(props)
 }
 
-fn object_type(name: &str, count: i32) -> Node {
-    Node::new("ObjectType")
-        .prop(name)
-        .child(leaf("Count", count))
-}
-
-fn mesh_model(id: i64, name: &str) -> Node {
-    Node::new("Model")
-        .prop(id)
-        .prop(class_name(name, "Model"))
-        .prop("Mesh")
-        .child(leaf("Version", 232))
-        .child(Node::new("Properties70"))
-        .child(leaf("Shading", true))
-        .child(leaf("Culling", "CullingOff"))
-}
-
-fn geometry(id: i64, mesh: &Mesh, materials: &[usize]) -> Node {
-    let vertices = mesh
-        .positions
-        .iter()
-        .flatten()
-        .map(|&v| v as f64 * CM_PER_METER)
-        .collect::<Vec<_>>();
-
-    // 多角形の最後の頂点番号はビット反転して区切りを表します
-    let polygon_indices = mesh
-        .indices
-        .chunks_exact(3)
-        .flat_map(|t| [t[0] as i32, t[1] as i32, !(t[2] as i32)])
-        .collect::<Vec<_>>();
-
-    let mut node = Node::new("Geometry")
-        .prop(id)
-        .prop(class_name(&mesh.name, "Geometry"))
-        .prop("Mesh")
-        .child(leaf("Vertices", vertices))
-        .child(leaf("PolygonVertexIndex", polygon_indices))
-        .child(leaf("GeometryVersion", 124));
-    let mut layer = Node::new("Layer").prop(0).child(leaf("Version", 100));
-
-    if !mesh.normals.is_empty() {
-        let normals = mesh
-            .normals
-            .iter()
-            .flatten()
-            .map(|&v| v as f64)
-            .collect::<Vec<_>>();
-        node = node.child(
-            layer_element("LayerElementNormal", "", "ByVertice", "Direct")
-                .child(leaf("Normals", normals)),
-        );
-        layer = layer.child(layer_ref("LayerElementNormal"));
-    }
-
-    if !mesh.uvs.is_empty() {
-        // FBX の UV は左下原点
-        let uvs = mesh
-            .uvs
-            .iter()
-            .flat_map(|&[u, v]| [u as f64, 1.0 - v as f64])
-            .collect::<Vec<_>>();
-        let uv_index = mesh.indices.iter().map(|&i| i as i32).collect::<Vec<_>>();
-        node = node.child(
-            layer_element(
-                "LayerElementUV",
-                "UVMap",
-                "ByPolygonVertex",
-                "IndexToDirect",
-            )
-            .child(leaf("UV", uvs))
-            .child(leaf("UVIndex", uv_index)),
-        );
-        layer = layer.child(layer_ref("LayerElementUV"));
-    }
-
-    if !materials.is_empty() {
-        let mut per_face = vec![0; mesh.indices.len() / 3];
-        for p in &mesh.parts {
-            let Some(local) = materials.iter().position(|&m| m == p.material) else {
-                continue;
-            };
-            let faces = p.start / 3..((p.start + p.count) / 3).min(per_face.len());
-            per_face[faces].fill(local as i32);
-        }
-        node = node.child(
-            layer_element("LayerElementMaterial", "", "ByPolygon", "IndexToDirect")
-                .child(leaf("Materials", per_face)),
-        );
-        layer = layer.child(layer_ref("LayerElementMaterial"));
-    }
-
-    node.child(layer)
-}
-
-fn layer_element(kind: &str, name: &str, mapping: &str, reference: &str) -> Node {
+/// オブジェクトのノード。バイナリ FBX の名前は「名前 \0\x01 クラス名」です
+fn object(kind: &str, class: &str, id: i64, name: &str, subclass: &str) -> Node {
     Node::new(kind)
-        .prop(0)
-        .child(leaf("Version", 101))
-        .child(leaf("Name", name))
-        .child(leaf("MappingInformationType", mapping))
-        .child(leaf("ReferenceInformationType", reference))
-}
-
-fn layer_ref(kind: &str) -> Node {
-    Node::new("LayerElement")
-        .child(leaf("Type", kind))
-        .child(leaf("TypedIndex", 0))
-}
-
-fn material(id: i64, name: &str, [r, g, b, a]: [f32; 4]) -> Node {
-    let props = Node::new("Properties70").children([
-        p_color("DiffuseColor", [r, g, b]),
-        p_double("DiffuseFactor", 1.0),
-        p_double("TransparencyFactor", 1.0 - a as f64),
-    ]);
-    Node::new("Material")
         .prop(id)
-        .prop(class_name(name, "Material"))
-        .prop("")
-        .child(leaf("Version", 102))
-        .child(leaf("ShadingModel", "phong"))
-        .child(leaf("MultiLayer", 0))
-        .child(props)
+        .prop(format!("{name}\0\u{1}{class}"))
+        .prop(subclass)
 }
 
-fn connect(child: i64, parent: i64) -> Node {
-    Node::new("C").prop("OO").prop(child).prop(parent)
-}
-
-/// バイナリ FBX のオブジェクト名は「名前 \0\x01 クラス名」
-fn class_name(name: &str, class: &str) -> String {
-    format!("{name}\0\u{1}{class}")
+fn props(children: impl IntoIterator<Item = Node>) -> Node {
+    Node::new("Properties70").children(children)
 }
 
 fn p(name: &str, kind: &str, label: &str, flags: &str) -> Node {
@@ -261,9 +177,22 @@ fn p_double(name: &str, v: f64) -> Node {
     p(name, "double", "Number", "").prop(v)
 }
 
+fn p_number(name: &str, v: f64) -> Node {
+    p(name, "Number", "", "A").prop(v)
+}
+
+fn p_time(name: &str, v: i64) -> Node {
+    p(name, "KTime", "Time", "").prop(v)
+}
+
 fn p_color(name: &str, [r, g, b]: [f32; 3]) -> Node {
     p(name, "Color", "", "A")
         .prop(r as f64)
         .prop(g as f64)
         .prop(b as f64)
+}
+
+/// `Lcl Translation` など、型名とプロパティ名が同じ 3 成分のプロパティ
+fn p_vec3(name: &str, [x, y, z]: [f64; 3]) -> Node {
+    p(name, name, "", "A").prop(x).prop(y).prop(z)
 }
