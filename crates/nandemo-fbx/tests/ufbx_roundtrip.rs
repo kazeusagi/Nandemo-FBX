@@ -1,7 +1,8 @@
 //! 書き出した FBX を ufbx（厳密モード）で読み戻して確かめます。
 
 use nandemo_core::{
-    Bezier, Bone, BoneKey, BoneTrack, Material, Mesh, MeshPart, Model, Motion, QUAT_IDENTITY,
+    Bezier, Bone, BoneKey, BoneTrack, Material, Mesh, MeshPart, Model, Morph, MorphKey,
+    MorphOffset, MorphTrack, Motion, QUAT_IDENTITY,
 };
 use nandemo_fbx::Options;
 
@@ -38,7 +39,26 @@ fn quad() -> Model {
                 count: 3,
             },
         ],
-        ..Default::default()
+        // 上の 2 頂点を 0.5 m 持ち上げるモーフと、中身のないモーフ（書き出されない）
+        morphs: vec![
+            Morph {
+                name: "up".into(),
+                offsets: vec![
+                    MorphOffset {
+                        vertex: 2,
+                        position: [0.0, 0.5, 0.0],
+                    },
+                    MorphOffset {
+                        vertex: 3,
+                        position: [0.0, 0.5, 0.0],
+                    },
+                ],
+            },
+            Morph {
+                name: "empty".into(),
+                offsets: vec![],
+            },
+        ],
     };
     let material = |name: &str, color| Material {
         name: name.into(),
@@ -61,7 +81,7 @@ fn quad() -> Model {
     }
 }
 
-/// 30 フレーム（1 秒）で root が X に 1 m 動き、arm が Z 軸まわりに 90° 回るモーション
+/// 30 フレーム（1 秒）で root が X に 1 m 動き、arm が Z 軸まわりに 90° 回り、up が 0 → 1 になるモーション
 fn motion() -> Motion {
     let h = std::f32::consts::FRAC_1_SQRT_2;
     let key = |frame, translation, rotation| BoneKey {
@@ -94,7 +114,20 @@ fn motion() -> Motion {
             ),
             track("not_in_model", vec![key(0, [0.0; 3], QUAT_IDENTITY)]),
         ],
-        morphs: vec![],
+        // フレーム 0 → 30 で up を 0 → 1
+        morphs: vec![MorphTrack {
+            morph: "up".into(),
+            keys: vec![
+                MorphKey {
+                    frame: 0,
+                    weight: 0.0,
+                },
+                MorphKey {
+                    frame: 30,
+                    weight: 1.0,
+                },
+            ],
+        }],
         ik: vec![],
     }
 }
@@ -206,6 +239,38 @@ fn bone_animation() {
 }
 
 #[test]
+fn blend_shapes() {
+    let scene = load(&nandemo_fbx::write(&quad(), None, &Options::default()));
+
+    assert_eq!(scene.blend_deformers.len(), 1);
+    let channels = &scene.blend_deformers[0].channels;
+    assert_eq!(channels.len(), 1);
+    assert_eq!(&*channels[0].element.name, "up");
+
+    let shape = channels[0].target_shape.as_ref().unwrap();
+    let vertices: Vec<u32> = shape.offset_vertices.iter().copied().collect();
+    assert_eq!(vertices, [2, 3]);
+    // メートル → センチメートル
+    assert!(close(shape.position_offsets[0].y, 50.0));
+    assert_eq!(&*scene.meshes[0].blend_deformers[0].element.name, "quad");
+}
+
+#[test]
+fn morph_animation() {
+    let scene = load(&nandemo_fbx::write(
+        &quad(),
+        Some(&motion()),
+        &Options::default(),
+    ));
+    let stack = &scene.anim_stacks[0];
+    let channel = &scene.blend_deformers[0].channels[0];
+    for (time, weight) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+        let w = ufbx::evaluate_blend_weight(&stack.anim, channel, time);
+        assert!(close(w, weight), "{time} 秒: {w}");
+    }
+}
+
+#[test]
 fn animation_only() {
     let options = Options { mesh: false };
     let scene = load(&nandemo_fbx::write(&quad(), Some(&motion()), &options));
@@ -213,6 +278,7 @@ fn animation_only() {
     assert_eq!(scene.meshes.len(), 0);
     assert_eq!(scene.materials.len(), 0);
     assert_eq!(scene.skin_deformers.len(), 0);
+    assert_eq!(scene.blend_deformers.len(), 0);
     assert!(scene.find_node("root").is_some());
     assert!(scene.find_node("arm").is_some());
     assert_eq!(scene.anim_stacks.len(), 1);
