@@ -45,12 +45,7 @@ fn quad() -> Model {
         base_color: color,
         base_color_texture: None,
     };
-    let bone = |name: &str, parent, translation| Bone {
-        name: name.into(),
-        parent,
-        translation,
-        rotation: QUAT_IDENTITY,
-    };
+    let bone = |name, parent, translation| Bone::new(name, parent, translation, QUAT_IDENTITY);
     Model {
         name: "quad".into(),
         meshes: vec![mesh],
@@ -100,6 +95,7 @@ fn motion() -> Motion {
             track("not_in_model", vec![key(0, [0.0; 3], QUAT_IDENTITY)]),
         ],
         morphs: vec![],
+        ik: vec![],
     }
 }
 

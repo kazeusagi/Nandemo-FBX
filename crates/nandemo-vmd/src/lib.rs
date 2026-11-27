@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use nandemo_core::bin::{BinReader, ReadError, Result};
+use nandemo_core::math::normalize;
 use nandemo_core::{self as ir, Quat, Vec3};
 
 /// MMD の 1 単位をメートルにした値（PMX リーダーと同じ）
@@ -17,6 +18,16 @@ pub struct Vmd {
     pub model_name: String,
     pub bone_keys: Vec<BoneKeyframe>,
     pub morph_keys: Vec<MorphKeyframe>,
+    pub ik_keys: Vec<IkKeyframe>,
+}
+
+/// 表示・IK の有効/無効のキーフレーム
+#[derive(Debug, Clone, PartialEq)]
+pub struct IkKeyframe {
+    pub frame: u32,
+    pub visible: bool,
+    /// （IK ボーン名, 有効か）
+    pub states: Vec<(String, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,12 +75,8 @@ pub fn parse(data: &[u8]) -> Result<Vmd> {
         });
     }
 
-    // 古いファイルはモーフのセクション自体がないことがあります
-    let n = if r.remaining() == 0 {
-        0
-    } else {
-        count(&mut r, 23)?
-    };
+    // 古いファイルでは、ここから後ろのセクションがないことがあります
+    let n = section(&mut r, 23)?;
     let mut morph_keys = Vec::with_capacity(n);
     for _ in 0..n {
         morph_keys.push(MorphKeyframe {
@@ -79,11 +86,44 @@ pub fn parse(data: &[u8]) -> Result<Vmd> {
         });
     }
 
+    // カメラ・照明・セルフ影は読み飛ばします
+    for size in [61, 28, 9] {
+        let n = section(&mut r, size)?;
+        r.skip(n * size)?;
+    }
+
+    let n = section(&mut r, 9)?;
+    let mut ik_keys = Vec::with_capacity(n);
+    for _ in 0..n {
+        let frame = r.u32()?;
+        let visible = r.u8()? != 0;
+        let m = count(&mut r, 21)?;
+        let mut states = Vec::with_capacity(m);
+        for _ in 0..m {
+            states.push((sjis(r.bytes(20)?), r.u8()? != 0));
+        }
+        ik_keys.push(IkKeyframe {
+            frame,
+            visible,
+            states,
+        });
+    }
+
     Ok(Vmd {
         model_name,
         bone_keys,
         morph_keys,
+        ik_keys,
     })
+}
+
+/// セクションの要素数。ファイルがここで終わっていれば 0
+fn section(r: &mut BinReader, size: usize) -> Result<usize> {
+    if r.remaining() == 0 {
+        Ok(0)
+    } else {
+        count(r, size)
+    }
 }
 
 /// VMD を IR に変換します。
@@ -106,7 +146,7 @@ pub fn to_motion(vmd: &Vmd) -> ir::Motion {
         bones[i].keys.push(ir::BoneKey {
             frame: k.frame,
             translation: [x * s, y * s, -z * s],
-            rotation: [-qx, -qy, qz, qw],
+            rotation: normalize([-qx, -qy, qz, qw]),
             interpolation: std::array::from_fn(|c| bezier(&k.interpolation, c)),
         });
     }
@@ -134,11 +174,32 @@ pub fn to_motion(vmd: &Vmd) -> ir::Motion {
         t.keys.sort_by_key(|k| k.frame);
     }
 
+    let mut ik: Vec<ir::IkTrack> = Vec::new();
+    for key in &vmd.ik_keys {
+        for (bone, enabled) in &key.states {
+            let k = ir::IkKey {
+                frame: key.frame,
+                enabled: *enabled,
+            };
+            match ik.iter_mut().find(|t| t.bone == *bone) {
+                Some(t) => t.keys.push(k),
+                None => ik.push(ir::IkTrack {
+                    bone: bone.clone(),
+                    keys: vec![k],
+                }),
+            }
+        }
+    }
+    for t in &mut ik {
+        t.keys.sort_by_key(|k| k.frame);
+    }
+
     ir::Motion {
         name: vmd.model_name.clone(),
         fps: FPS,
         bones,
         morphs,
+        ik,
     }
 }
 
@@ -198,6 +259,19 @@ mod tests {
         b.extend(fixed("あ", 15));
         b.extend(5u32.to_le_bytes());
         b.extend(0.5f32.to_le_bytes());
+
+        // カメラ 1 つ（読み飛ばし）、照明・セルフ影なし
+        b.extend(1u32.to_le_bytes());
+        b.extend([0u8; 61]);
+        b.extend([0u8; 8]);
+
+        // フレーム 20 で左足ＩＫを無効に
+        b.extend(1u32.to_le_bytes());
+        b.extend(20u32.to_le_bytes());
+        b.push(1);
+        b.extend(1u32.to_le_bytes());
+        b.extend(fixed("左足ＩＫ", 20));
+        b.push(0);
         b
     }
 
@@ -210,6 +284,20 @@ mod tests {
         assert_eq!(vmd.bone_keys[0].frame, 10);
         assert_eq!(vmd.morph_keys[0].morph, "あ");
         assert_eq!(vmd.morph_keys[0].weight, 0.5);
+        assert_eq!(vmd.ik_keys[0].frame, 20);
+        assert_eq!(vmd.ik_keys[0].states, [("左足ＩＫ".to_string(), false)]);
+
+        let motion = to_motion(&vmd);
+        assert!(motion.ik[0].enabled(19));
+        assert!(!motion.ik[0].enabled(20));
+    }
+
+    #[test]
+    fn parses_file_without_trailing_sections() {
+        let data = sample_vmd();
+        // モーフのセクションの直後で終わるファイル
+        let vmd = parse(&data[..30 + 20 + 4 + 111 * 2 + 4 + 23]).unwrap();
+        assert!(vmd.ik_keys.is_empty());
     }
 
     #[test]
@@ -228,7 +316,8 @@ mod tests {
         assert_eq!(keys[1].frame, 10);
         let s = MMD_UNIT_METERS;
         assert_eq!(keys[0].translation, [s, 2.0 * s, -3.0 * s]);
-        assert_eq!(keys[0].rotation, [-0.1, -0.2, 0.3, 0.9]);
+        // X・Y を反転し、長さ 1 に正規化
+        assert_eq!(keys[0].rotation, normalize([-0.1, -0.2, 0.3, 0.9]));
         assert_eq!(keys[0].interpolation[3].x1, 20.0 / 127.0);
         assert_eq!(motion.morphs[0].keys[0].frame, 5);
     }

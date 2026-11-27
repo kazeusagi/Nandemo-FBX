@@ -68,4 +68,70 @@ pub struct Bone {
     pub translation: Vec3,
     /// 親ボーンからの相対回転
     pub rotation: Quat,
+    /// 変形階層。小さいものから順に計算します（MMD 以外は 0）
+    pub layer: i32,
+    /// 付与親（MMD）
+    pub inherit: Option<Inherit>,
+    /// IK（MMD）
+    pub ik: Option<Ik>,
+}
+
+impl Bone {
+    /// IK・付与親のない、変形階層 0 のボーン
+    pub fn new(name: &str, parent: Option<usize>, translation: Vec3, rotation: Quat) -> Self {
+        Self {
+            name: name.into(),
+            parent,
+            translation,
+            rotation,
+            layer: 0,
+            inherit: None,
+            ik: None,
+        }
+    }
+}
+
+/// ボーンごとの親の番号。範囲外や循環している親は `None` にします
+pub fn safe_parents(bones: &[Bone]) -> Vec<Option<usize>> {
+    let parent = |i: usize| bones[i].parent.filter(|&p| p < bones.len());
+    (0..bones.len())
+        .map(|i| {
+            let mut cur = parent(i);
+            for _ in 0..bones.len() {
+                match cur {
+                    Some(c) if c == i => return None,
+                    Some(c) => cur = parent(c),
+                    None => break,
+                }
+            }
+            parent(i)
+        })
+        .collect()
+}
+
+/// 付与親のアニメーションを `weight` の割合で自分にも加えます
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inherit {
+    pub bone: usize,
+    pub weight: f32,
+    pub rotation: bool,
+    pub translation: bool,
+}
+
+/// このボーンの位置に `target` ボーンが来るよう、`links` のボーンを回します
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ik {
+    pub target: usize,
+    pub iterations: u32,
+    /// 1 回の計算で回せる最大角度（ラジアン）
+    pub limit_angle: f32,
+    /// `target` に近いものから順
+    pub links: Vec<IkLink>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IkLink {
+    pub bone: usize,
+    /// 回転の制限。オイラー角 XYZ（ラジアン）の（下限, 上限）
+    pub limits: Option<(Vec3, Vec3)>,
 }

@@ -9,6 +9,7 @@
 //! - UV は左上原点
 //! - 三角形は反時計回りが表面
 
+pub mod bake;
 pub mod bin;
 pub mod math;
 mod model;
