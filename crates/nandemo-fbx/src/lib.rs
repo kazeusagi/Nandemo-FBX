@@ -8,6 +8,7 @@ mod anim;
 pub mod binary;
 mod matrix;
 mod mesh;
+mod reduce;
 mod skeleton;
 
 use binary::{CREATION_TIME, FILE_ID, Node, Prop, VERSION, leaf};
@@ -21,11 +22,19 @@ pub struct Options {
     /// メッシュ・マテリアル・スキン・ブレンドシェイプを書き出すか。
     /// `false` にするとボーンとボーンアニメーションだけの FBX になります
     pub mesh: bool,
+    /// 焼き込んだボーンアニメーションのキーを減らすときの、移動の許容誤差（メートル）。0 で減らしません
+    pub translation_tolerance: f32,
+    /// 同じく回転の許容誤差（度、オイラー角の各成分）。0 で減らしません
+    pub rotation_tolerance: f32,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { mesh: true }
+        Self {
+            mesh: true,
+            translation_tolerance: 0.0001,
+            rotation_tolerance: 0.01,
+        }
     }
 }
 
@@ -39,7 +48,7 @@ pub fn write(model: &Model, motion: Option<&Motion>, options: &Options) -> Vec<u
         Vec::new()
     };
     if let Some(motion) = motion {
-        anim::write(&mut doc, model, motion, &skeleton, &channels);
+        anim::write(&mut doc, model, motion, &skeleton, &channels, options);
     }
     doc.encode()
 }

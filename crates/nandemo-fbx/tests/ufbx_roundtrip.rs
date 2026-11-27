@@ -238,6 +238,28 @@ fn bone_animation() {
     assert!(close(t.rotation.z.abs(), std::f64::consts::FRAC_1_SQRT_2));
 }
 
+/// 焼き込んだ 31 フレームのキーは、線形な動きなら両端の 2 つまで減る
+#[test]
+fn reduces_baked_keys() {
+    let max_keys = |options: &Options| {
+        let scene = load(&nandemo_fbx::write(&quad(), Some(&motion()), options));
+        scene
+            .anim_curves
+            .iter()
+            .map(|c| c.keyframes.len())
+            .max()
+            .unwrap()
+    };
+    assert_eq!(max_keys(&Options::default()), 2);
+
+    let full = Options {
+        translation_tolerance: 0.0,
+        rotation_tolerance: 0.0,
+        ..Default::default()
+    };
+    assert_eq!(max_keys(&full), 31);
+}
+
 #[test]
 fn blend_shapes() {
     let scene = load(&nandemo_fbx::write(&quad(), None, &Options::default()));
@@ -272,7 +294,10 @@ fn morph_animation() {
 
 #[test]
 fn animation_only() {
-    let options = Options { mesh: false };
+    let options = Options {
+        mesh: false,
+        ..Default::default()
+    };
     let scene = load(&nandemo_fbx::write(&quad(), Some(&motion()), &options));
 
     assert_eq!(scene.meshes.len(), 0);

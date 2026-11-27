@@ -3,8 +3,9 @@ use nandemo_core::{Model, Motion};
 
 use crate::binary::leaf;
 use crate::mesh::Channel;
+use crate::reduce::reduce;
 use crate::skeleton::Skeleton;
-use crate::{CM_PER_METER, Document, matrix, object, p_number, p_time, props};
+use crate::{CM_PER_METER, Document, Options, matrix, object, p_number, p_time, props};
 
 /// FBX の時間単位（1 秒あたり）
 const KTIME_PER_SECOND: f64 = 46_186_158_000.0;
@@ -16,14 +17,15 @@ const KEY_FLAGS_LINEAR: i32 = 0x0104;
 ///
 /// ボーンはベジェ補間をそのまま FBX に移すのが難しいので、毎フレームの値を焼き込みます。
 /// 回転はオイラー角にするため、前のフレームに近い角度を選んで飛びを防ぎます。
+/// 焼き込んだキーは、許容誤差の範囲で減らします（[`reduce`]）。
 /// モーフは VMD でも線形補間なので、キーをそのまま書き出します。
-// TODO: キーの間引き
 pub(crate) fn write(
     doc: &mut Document,
     model: &Model,
     motion: &Motion,
     skeleton: &Skeleton,
     channels: &[Channel],
+    options: &Options,
 ) {
     let fps = if motion.fps > 0.0 { motion.fps } else { 30.0 } as f64;
     let time = |frame: u32| (frame as f64 * KTIME_PER_SECOND / fps).round() as i64;
@@ -76,24 +78,11 @@ pub(crate) fn write(
         let [tx, ty, tz] = translation;
         let [rx, ry, rz] = rotation;
         let curves = |x, y, z| vec![("d|X", x), ("d|Y", y), ("d|Z", z)];
-        curve_node(
-            doc,
-            layer,
-            target,
-            "T",
-            "Lcl Translation",
-            &times,
-            curves(tx, ty, tz),
-        );
-        curve_node(
-            doc,
-            layer,
-            target,
-            "R",
-            "Lcl Rotation",
-            &times,
-            curves(rx, ry, rz),
-        );
+        let t_tol = (options.translation_tolerance as f64 * CM_PER_METER) as f32;
+        let r_tol = options.rotation_tolerance;
+        let (t, r) = (curves(tx, ty, tz), curves(rx, ry, rz));
+        curve_node(doc, layer, target, "T", "Lcl Translation", &times, t, t_tol);
+        curve_node(doc, layer, target, "R", "Lcl Rotation", &times, r, r_tol);
     }
 
     for channel in channels {
@@ -114,11 +103,13 @@ pub(crate) fn write(
             "DeformPercent",
             &times,
             vec![("d|DeformPercent", values)],
+            0.0,
         );
     }
 }
 
-/// カーブノードと、成分ごとのカーブを書き出します。
+/// カーブノードと、成分ごとのカーブを書き出します。キーは `tolerance` の範囲で減らします。
+#[allow(clippy::too_many_arguments)]
 fn curve_node(
     doc: &mut Document,
     layer: i64,
@@ -127,6 +118,7 @@ fn curve_node(
     prop: &str,
     times: &[i64],
     curves: Vec<(&str, Vec<f32>)>,
+    tolerance: f32,
 ) {
     let node = doc.id();
     doc.add(
@@ -144,7 +136,7 @@ fn curve_node(
         let (times, values) = if values.iter().all(|&v| v == values[0]) {
             (vec![times[0]], vec![values[0]])
         } else {
-            (times.to_vec(), values)
+            reduce(times, &values, tolerance)
         };
         let count = times.len() as i32;
 
