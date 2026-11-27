@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use nandemo_core::{Model, Motion};
+use nandemo_core::{Model, Motion, bake};
 
 /// MMD / VRM のモデル・モーションを FBX に変換します
 #[derive(Parser)]
@@ -62,6 +62,14 @@ fn run(args: Args) -> Result<()> {
     if let Some(motion) = &motion {
         report_unmatched(&model, motion);
     }
+    // FBX には IK・付与親がないので、計算したポーズを焼き込みます
+    let motion = motion.map(|m| {
+        if bake::needs_bake(&model) {
+            bake::bake(&model, &m)
+        } else {
+            m
+        }
+    });
 
     let options = nandemo_fbx::Options {
         mesh: args.export != Export::Anim,

@@ -1,6 +1,6 @@
 use nandemo_core as ir;
 
-use crate::{MorphKind, Pmx, Weight};
+use crate::{Bone, MorphKind, Pmx, Weight};
 
 /// MMD の 1 単位をメートルにした値（一般的な換算 1 単位 = 8 cm）
 pub const MMD_UNIT_METERS: f32 = 0.08;
@@ -100,11 +100,39 @@ pub fn to_model(pmx: &Pmx) -> ir::Model {
             let parent = bone(b.parent);
             let origin = parent.map_or([0.0; 3], |p| pmx.bones[p].position);
             let local = std::array::from_fn(|k| b.position[k] - origin[k]);
+            let inherit = b.inherit.and_then(|(p, weight)| {
+                Some(ir::Inherit {
+                    bone: bone(p)?,
+                    weight,
+                    rotation: b.flags & Bone::INHERIT_ROTATION != 0,
+                    translation: b.flags & Bone::INHERIT_TRANSLATION != 0,
+                })
+            });
+            let ik = b.ik.as_ref().and_then(|ik| {
+                Some(ir::Ik {
+                    target: bone(ik.target)?,
+                    iterations: ik.loops.max(0) as u32,
+                    limit_angle: ik.limit_angle,
+                    links: ik
+                        .links
+                        .iter()
+                        .filter_map(|l| {
+                            Some(ir::IkLink {
+                                bone: bone(l.bone)?,
+                                limits: l.limits.map(|(min, max)| limits(min, max)),
+                            })
+                        })
+                        .collect(),
+                })
+            });
             ir::Bone {
                 name: b.name.clone(),
                 parent,
                 translation: position(local),
                 rotation: ir::QUAT_IDENTITY,
+                layer: b.layer,
+                inherit,
+                ik,
             }
         })
         .collect();
@@ -129,6 +157,12 @@ fn position(v: ir::Vec3) -> ir::Vec3 {
 
 fn direction([x, y, z]: ir::Vec3) -> ir::Vec3 {
     [x, y, -z]
+}
+
+/// IK の角度制限。Z を反転すると X・Y 軸まわりの回転は向きが逆になるので、
+/// X・Y は下限と上限を入れ替えて符号を反転します
+fn limits(min: ir::Vec3, max: ir::Vec3) -> (ir::Vec3, ir::Vec3) {
+    ([-max[0], -max[1], min[2]], [-min[0], -min[1], max[2]])
 }
 
 /// SDEF は BDEF2、QDEF は BDEF4 として扱います。

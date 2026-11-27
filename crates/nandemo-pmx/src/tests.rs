@@ -172,4 +172,11 @@ fn converts_to_right_handed_meters() {
     assert_eq!(model.bones[0].parent, None);
     assert_eq!(model.bones[1].parent, Some(0));
     assert_eq!(model.bones[1].translation, [0.0, s, -s]);
+
+    let ik = model.bones[1].ik.as_ref().unwrap();
+    assert_eq!((ik.target, ik.iterations, ik.limit_angle), (0, 40, 2.0));
+    // X の制限 [-1, 1] は Z 反転で [-1, 1] のまま（下限・上限を入れ替えて符号反転）
+    let (min, max) = ik.links[0].limits.unwrap();
+    assert_eq!((min[0], max[0]), (-1.0, 1.0));
+    assert!(model.bones[0].inherit.is_none());
 }

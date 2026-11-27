@@ -9,6 +9,30 @@ pub struct Motion {
     pub fps: f32,
     pub bones: Vec<BoneTrack>,
     pub morphs: Vec<MorphTrack>,
+    /// IK の有効・無効の切り替え（MMD）
+    pub ik: Vec<IkTrack>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IkTrack {
+    /// IK ボーンの名前
+    pub bone: String,
+    /// フレーム順に並んでいます
+    pub keys: Vec<IkKey>,
+}
+
+impl IkTrack {
+    /// 指定フレームで IK が有効か（最初のキーより前は有効）
+    pub fn enabled(&self, frame: u32) -> bool {
+        let i = self.keys.partition_point(|k| k.frame <= frame);
+        i == 0 || self.keys[i - 1].enabled
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IkKey {
+    pub frame: u32,
+    pub enabled: bool,
 }
 
 impl Motion {

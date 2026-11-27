@@ -1,5 +1,5 @@
-use nandemo_core::Bone;
 use nandemo_core::math::{add, quat_mul, rotate};
+use nandemo_core::{Bone, safe_parents};
 
 use crate::binary::leaf;
 use crate::matrix::{self, Mat4};
@@ -14,7 +14,7 @@ pub(crate) struct Skeleton {
 
 /// ボーンを LimbNode として書き出します。
 pub(crate) fn write(doc: &mut Document, bones: &[Bone]) -> Skeleton {
-    let parents = parents(bones);
+    let parents = safe_parents(bones);
     let mut ids = Vec::with_capacity(bones.len());
     for b in bones {
         let attr = doc.id();
@@ -50,24 +50,6 @@ pub(crate) fn write(doc: &mut Document, bones: &[Bone]) -> Skeleton {
         .map(|(t, r)| matrix::from_rt(t, r))
         .collect();
     Skeleton { ids, globals }
-}
-
-/// 親の番号。範囲外や循環している親は無視します
-fn parents(bones: &[Bone]) -> Vec<Option<usize>> {
-    (0..bones.len())
-        .map(|i| {
-            let parent = bones[i].parent.filter(|&p| p < bones.len())?;
-            let mut cur = Some(parent);
-            for _ in 0..bones.len() {
-                match cur {
-                    Some(c) if c == i => return None,
-                    Some(c) => cur = bones[c].parent.filter(|&p| p < bones.len()),
-                    None => break,
-                }
-            }
-            Some(parent)
-        })
-        .collect()
 }
 
 /// ボーンごとのグローバルな（位置, 回転）
