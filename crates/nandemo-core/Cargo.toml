@@ -1,0 +1,8 @@
+[package]
+name = "nandemo-core"
+description = "Nandemo-FBX の中間表現（IR）と共通ユーティリティ"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true

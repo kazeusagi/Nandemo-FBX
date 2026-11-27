@@ -1,0 +1,19 @@
+[package]
+name = "nandemo-cli"
+description = "MMD / VRM のモデル・モーションを FBX に変換するコマンドラインツール"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nandemo-fbx"
+path = "src/main.rs"
+
+[dependencies]
+nandemo-core.workspace = true
+nandemo-pmx.workspace = true
+nandemo-vmd.workspace = true
+nandemo-fbx.workspace = true
+clap.workspace = true
