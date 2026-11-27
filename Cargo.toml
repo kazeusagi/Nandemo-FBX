@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/kazeusagi/Nandemo-FBX"
+
+[workspace.dependencies]
+nandemo-core = { path = "crates/nandemo-core" }
+nandemo-pmx = { path = "crates/nandemo-pmx" }
+nandemo-vmd = { path = "crates/nandemo-vmd" }
+nandemo-fbx = { path = "crates/nandemo-fbx" }
+clap = { version = "4", features = ["derive"] }
+encoding_rs = "0.8"
+ufbx = "0.11"

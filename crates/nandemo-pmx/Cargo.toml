@@ -1,0 +1,11 @@
+[package]
+name = "nandemo-pmx"
+description = "PMX（MikuMikuDance モデル）リーダー"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nandemo-core.workspace = true
