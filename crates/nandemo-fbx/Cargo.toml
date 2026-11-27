@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 nandemo-core.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 ufbx.workspace = true

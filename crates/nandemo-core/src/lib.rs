@@ -10,6 +10,7 @@
 //! - 三角形は反時計回りが表面
 
 pub mod bin;
+pub mod math;
 mod model;
 mod motion;
 

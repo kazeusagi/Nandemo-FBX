@@ -16,9 +16,15 @@ pub fn to_model(pmx: &Pmx) -> ir::Model {
     for v in &pmx.vertices {
         let (j, w) = skin(&v.weight);
         joints.push(j.map(|b| bone(b).unwrap_or(0) as u32));
-        weights.push(std::array::from_fn(|k| {
-            if bone(j[k]).is_some() { w[k] } else { 0.0 }
-        }));
+        let w: [f32; 4] = std::array::from_fn(|k| {
+            if bone(j[k]).is_some() {
+                w[k].max(0.0)
+            } else {
+                0.0
+            }
+        });
+        let sum: f32 = w.iter().sum();
+        weights.push(if sum > 0.0 { w.map(|x| x / sum) } else { w });
     }
 
     let mut parts = Vec::with_capacity(pmx.materials.len());

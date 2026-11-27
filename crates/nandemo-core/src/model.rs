@@ -19,7 +19,7 @@ pub struct Mesh {
     pub uvs: Vec<Vec2>,
     /// 頂点ごとのボーン番号（最大 4 本）。空の場合はスキンなし
     pub joints: Vec<[u32; 4]>,
-    /// `joints` に対応するウェイト
+    /// `joints` に対応するウェイト（合計 1）
     pub weights: Vec<[f32; 4]>,
     /// 三角形リスト
     pub indices: Vec<u32>,
